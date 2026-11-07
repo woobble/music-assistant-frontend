@@ -4,8 +4,11 @@ import type {
   AuthProvider,
   AuthToken,
   AuthorizationStart,
+  OidcLinkStart,
+  OidcRegistrationPolicy,
   Role,
   User,
+  UserAuthProvider,
 } from "./interfaces";
 
 type SendCommand = <Result>(
@@ -107,6 +110,70 @@ export class AccountApi {
   public async getAuthProviders(): Promise<AuthProvider[]> {
     // Get list of available authentication providers
     return await this.sendCommand<AuthProvider[]>("auth/providers");
+  }
+
+  public async getUserAuthProviders(): Promise<UserAuthProvider[]> {
+    return await this.sendCommand<UserAuthProvider[]>(
+      "auth/user/providers",
+      undefined,
+      { suppressGlobalError: true },
+    );
+  }
+
+  public async unlinkOidcProvider(linkId: string): Promise<boolean> {
+    return await this.sendCommand<boolean>(
+      "auth/oidc/unlink",
+      { link_id: linkId, confirmed: true },
+      { suppressGlobalError: true },
+    );
+  }
+
+  public async getOidcRegistrationPolicy(): Promise<OidcRegistrationPolicy> {
+    return await this.sendCommand<OidcRegistrationPolicy>(
+      "auth/oidc/registration_policy",
+      undefined,
+      { suppressGlobalError: true },
+    );
+  }
+
+  public async setOidcRegistrationPolicy(
+    enabled: boolean,
+  ): Promise<OidcRegistrationPolicy> {
+    return await this.sendCommand<OidcRegistrationPolicy>(
+      "auth/oidc/registration_policy/set",
+      { enabled },
+      { suppressGlobalError: true },
+    );
+  }
+
+  public async startOidcLink(
+    baseUrl: string,
+    sessionToken: string,
+  ): Promise<OidcLinkStart> {
+    if (!sessionToken) throw new Error("Not authenticated");
+
+    const endpoint = new URL("/auth/oidc/link/start", baseUrl);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${sessionToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ confirmed: true }),
+      cache: "no-store",
+      credentials: "include",
+      mode: "cors",
+    });
+
+    if (!response.ok) {
+      const details = (await response.text()).trim();
+      throw new Error(
+        details || `Account linking could not be started (${response.status})`,
+      );
+    }
+
+    return (await response.json()) as OidcLinkStart;
   }
 
   /**

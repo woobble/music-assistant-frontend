@@ -247,6 +247,23 @@
                   }}
                 </v-btn>
 
+                <v-btn
+                  v-if="hasOpenIdConnectAuth"
+                  variant="outlined"
+                  size="x-large"
+                  block
+                  rounded="lg"
+                  class="text-none oauth-btn mt-4"
+                  :loading="isAuthenticating"
+                  :disabled="isAuthenticating"
+                  @click="loginWithOpenIdConnect"
+                >
+                  <v-icon start>mdi-openid</v-icon>
+                  {{
+                    $t("login.sign_in_with_oidc", "Sign in with OpenID Connect")
+                  }}
+                </v-btn>
+
                 <!-- Back button (only show for remote connections or when not hosted with API) -->
                 <v-btn
                   v-if="isRemoteConnection || !isHostedWithAPI"
@@ -618,6 +635,9 @@ const authProviders = ref<AuthProvider[]>([]);
 const homeAssistantProvider = computed(() =>
   authProviders.value.find((p) => p.provider_id === "homeassistant"),
 );
+const openIdConnectProvider = computed(() =>
+  authProviders.value.find((p) => p.provider_id === "oidc"),
+);
 // Home Assistant can return to the remote app itself when it is reachable from
 // the internet, which then completes the sign-in (completeExternalLogin).
 const canReturnToRemoteApp = computed(
@@ -635,6 +655,16 @@ const hasHomeAssistantAuth = computed(
       canReturnToRemoteApp.value ||
       !!api.serverInfo.value?.external_url),
 );
+const hasOpenIdConnectAuth = computed(
+  () =>
+    !!openIdConnectProvider.value?.requires_redirect &&
+    (!isRemoteConnection.value || !!api.serverInfo.value?.external_url),
+);
+
+let oidcLoginPopup: Window | null = null;
+let oidcLoginNonce: string | null = null;
+let oidcLoginPoll: number | undefined;
+let oidcLoginTimeout: number | undefined;
 
 // Computed
 const getSubtitle = computed(() => {
@@ -1298,6 +1328,33 @@ const autoConnect = async () => {
 
   // Handle auth code from OAuth flow (long codes, not 8-character guest codes)
   if (authCode && authCode.length > 8) {
+    const oidcPopupNonce = urlParams.get("ma_oidc_popup");
+    if (oidcPopupNonce && window.opener && !window.opener.closed) {
+      urlParams.delete("code");
+      urlParams.delete("ma_oidc_popup");
+      const queryString = urlParams.toString();
+      window.history.replaceState(
+        window.history.state,
+        "",
+        window.location.origin +
+          window.location.pathname +
+          (queryString ? `?${queryString}` : "") +
+          window.location.hash,
+      );
+      window.opener.postMessage(
+        { type: "ma_oidc_popup_login", nonce: oidcPopupNonce, token: authCode },
+        window.location.origin,
+      );
+      step.value = "login";
+      loginError.value = t(
+        "login.oidc_popup_complete",
+        "Sign-in complete. Return to the Music Assistant window.",
+      );
+      window.close();
+      return;
+    }
+
+    urlParams.delete("ma_oidc_popup");
     // Store the token and clean up the URL
     authManager.setToken(authCode);
     urlParams.delete("code");
@@ -1997,6 +2054,155 @@ const loginWithHomeAssistant = async () => {
   }
 };
 
+const loginWithOpenIdConnect = async () => {
+  isAuthenticating.value = true;
+  loginError.value = null;
+
+  const popup = window.open(
+    "about:blank",
+    "ma-oidc-login",
+    "popup,width=520,height=680",
+  );
+  const nonce = popup ? createCodeVerifier() : null;
+  oidcLoginPopup = popup;
+  oidcLoginNonce = nonce;
+
+  try {
+    const returnUrl = new URL(window.location.href);
+    for (const name of ["code", "state", "error", "error_description"]) {
+      returnUrl.searchParams.delete(name);
+    }
+    returnUrl.searchParams.delete("ma_oidc_popup");
+    if (nonce) returnUrl.searchParams.set("ma_oidc_popup", nonce);
+
+    const response = await api.startAuthorization("oidc", returnUrl.href);
+    if (!isWebUrl(response.authorization_url)) {
+      throw new Error(response.error || "Invalid authorization response");
+    }
+
+    if (!popup) {
+      window.location.replace(response.authorization_url);
+      return;
+    }
+
+    popup.location.replace(response.authorization_url);
+    oidcLoginPoll = window.setInterval(() => {
+      if (!oidcLoginPopup || oidcLoginPopup.closed) {
+        clearOpenIdConnectPopup();
+        loginError.value = t(
+          "login.oidc_cancelled",
+          "OpenID Connect sign-in was cancelled or closed.",
+        );
+        isAuthenticating.value = false;
+        return;
+      }
+
+      try {
+        if (
+          oidcLoginPopup.document.body?.innerText.includes(
+            "Authentication Failed",
+          )
+        ) {
+          clearOpenIdConnectPopup();
+          loginError.value = t(
+            "login.oidc_failed",
+            "OpenID Connect sign-in could not be completed.",
+          );
+          isAuthenticating.value = false;
+        }
+      } catch {
+        // The identity provider and the fixed server callback are cross-origin
+        // while the browser is completing authorization.
+      }
+    }, 500);
+    oidcLoginTimeout = window.setTimeout(
+      () => {
+        clearOpenIdConnectPopup(true);
+        loginError.value = t(
+          "login.oidc_expired",
+          "OpenID Connect sign-in expired. Please try again.",
+        );
+        isAuthenticating.value = false;
+      },
+      10 * 60 * 1000,
+    );
+  } catch {
+    clearOpenIdConnectPopup(true);
+    loginError.value = t(
+      "login.oidc_failed",
+      "OpenID Connect sign-in could not be completed.",
+    );
+    isAuthenticating.value = false;
+  }
+};
+
+function clearOpenIdConnectPopup(close = false) {
+  if (oidcLoginPoll !== undefined) window.clearInterval(oidcLoginPoll);
+  if (oidcLoginTimeout !== undefined) window.clearTimeout(oidcLoginTimeout);
+  oidcLoginPoll = undefined;
+  oidcLoginTimeout = undefined;
+  if (close && oidcLoginPopup && !oidcLoginPopup.closed) {
+    oidcLoginPopup.close();
+  }
+  oidcLoginPopup = null;
+  oidcLoginNonce = null;
+}
+
+async function completeOpenIdConnectPopup(token: string) {
+  clearOpenIdConnectPopup(true);
+  isAuthenticating.value = true;
+  loginError.value = null;
+
+  try {
+    const { user } = await api.authenticateWithToken(token);
+    emit("authenticated", { token, user });
+  } catch (error) {
+    handleAuthenticationError(error);
+    await fetchAuthProviders();
+    step.value = "login";
+  }
+}
+
+function handleOpenIdConnectMessage(event: MessageEvent) {
+  if (
+    !oidcLoginPopup ||
+    event.origin !== window.location.origin ||
+    event.source !== oidcLoginPopup ||
+    !event.data ||
+    typeof event.data !== "object"
+  ) {
+    return;
+  }
+
+  const data = event.data as Record<string, unknown>;
+  let redirectOrigin: string | null = null;
+  if (typeof data.redirectUrl === "string") {
+    try {
+      redirectOrigin = new URL(data.redirectUrl, window.location.origin).origin;
+    } catch {
+      return;
+    }
+  }
+  if (
+    data.type === "oauth_success" &&
+    typeof data.token === "string" &&
+    typeof data.redirectUrl === "string" &&
+    redirectOrigin === window.location.origin
+  ) {
+    void completeOpenIdConnectPopup(data.token);
+    return;
+  }
+
+  if (
+    data.type === "ma_oidc_popup_login" &&
+    typeof data.token === "string" &&
+    typeof data.nonce === "string" &&
+    data.nonce === oidcLoginNonce
+  ) {
+    void completeOpenIdConnectPopup(data.token);
+  }
+}
+
 /**
  * Complete a sign-in that its identity provider returned to this app with.
  *
@@ -2234,10 +2440,15 @@ const stopExternalLoginListener = listenForExternalLogin(
   (result) => void completeExternalLogin(result),
 );
 onUnmounted(stopExternalLoginListener);
+onUnmounted(() => {
+  window.removeEventListener("message", handleOpenIdConnectMessage);
+  clearOpenIdConnectPopup(true);
+});
 
 // Start auto-connect on mount; any other mount-time state is a reconnect
 // already under way (its own transport is live), handled above instead.
 onMounted(() => {
+  window.addEventListener("message", handleOpenIdConnectMessage);
   // Delay showing login UI to prevent flash during auto-authentication
   setTimeout(() => {
     showLoginUI.value = true;

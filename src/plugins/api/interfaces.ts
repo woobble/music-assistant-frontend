@@ -1951,7 +1951,8 @@ export enum Scope {
 
 export enum AuthProviderType {
   BUILTIN = "builtin",
-  OAUTH_HOMEASSISTANT = "oauth_homeassistant",
+  OAUTH_HOMEASSISTANT = "homeassistant",
+  OIDC = "oidc",
 }
 
 export interface User {
@@ -2005,6 +2006,25 @@ export interface AuthProvider {
   requires_redirect: boolean;
   // whether a sign-in can return to the remote app; servers before schema 87 omit it
   supports_remote_app?: boolean;
+}
+
+/** A safe view of one authentication link owned by the current user. */
+export interface UserAuthProvider {
+  link_id: string;
+  user_id: string;
+  provider_type: AuthProviderType;
+  // The server hides password hashes and OIDC identity keys. Only the
+  // Home Assistant provider exposes its user ID.
+  provider_user_id: string;
+  created_at: string;
+}
+
+export interface OidcRegistrationPolicy {
+  enabled: boolean;
+}
+
+export interface OidcLinkStart {
+  authorization_url: string;
 }
 
 export interface AuthorizationStart {

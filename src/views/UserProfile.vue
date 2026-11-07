@@ -4,6 +4,7 @@
       <div class="profile-content space-y-6">
         <ProfileSettings />
         <PasswordSettings />
+        <LinkedAuthProviders />
         <SessionTokensList
           :tokens="sessionTokens"
           @revoke="confirmRevokeToken"
@@ -58,6 +59,7 @@
 
 <script setup lang="ts">
 import LongLivedTokensList from "@/components/profile/LongLivedTokensList.vue";
+import LinkedAuthProviders from "@/components/profile/LinkedAuthProviders.vue";
 import PasswordSettings from "@/components/profile/PasswordSettings.vue";
 import ProfileSettings from "@/components/profile/ProfileSettings.vue";
 import SessionTokensList from "@/components/profile/SessionTokensList.vue";

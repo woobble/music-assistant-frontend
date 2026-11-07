@@ -28,6 +28,9 @@ import {
   type AnnouncementTtsEngine,
   type Artist,
   type AuthToken,
+  type UserAuthProvider,
+  type OidcLinkStart,
+  type OidcRegistrationPolicy,
   type BackgroundTask,
   type CommandMessage,
   type ErrorResultMessage,
@@ -3656,6 +3659,36 @@ export class MusicAssistantApi {
 
   public async getAuthProviders(): Promise<AuthProvider[]> {
     return this.accountApi.getAuthProviders();
+  }
+
+  public async getUserAuthProviders(): Promise<UserAuthProvider[]> {
+    return this.accountApi.getUserAuthProviders();
+  }
+
+  public async unlinkOidcProvider(linkId: string): Promise<boolean> {
+    return this.accountApi.unlinkOidcProvider(linkId);
+  }
+
+  public async getOidcRegistrationPolicy(): Promise<OidcRegistrationPolicy> {
+    return this.accountApi.getOidcRegistrationPolicy();
+  }
+
+  public async setOidcRegistrationPolicy(
+    enabled: boolean,
+  ): Promise<OidcRegistrationPolicy> {
+    return this.accountApi.setOidcRegistrationPolicy(enabled);
+  }
+
+  public async startOidcLink(sessionToken: string): Promise<OidcLinkStart> {
+    const serverInfo = this.serverInfo.value;
+    const baseUrl = this.isRemoteConnection.value
+      ? serverInfo?.external_url ||
+        serverInfo?.internal_url ||
+        serverInfo?.base_url
+      : this.baseUrl || serverInfo?.internal_url || serverInfo?.base_url;
+    if (!baseUrl)
+      throw new Error("The Music Assistant server URL is unavailable");
+    return this.accountApi.startOidcLink(baseUrl, sessionToken);
   }
 
   public async startAuthorization(

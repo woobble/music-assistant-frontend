@@ -1291,6 +1291,168 @@ describe("Home Assistant sign in over Remote Access", () => {
   });
 });
 
+describe("OpenID Connect sign in", () => {
+  const remoteId = "ABCDEFGH1234512345ABCDEFGH";
+  const authorizationUrl =
+    "https://issuer.example/authorize?state=issuer-state";
+  const signedInUser = user({
+    user_id: "oidc-user",
+    username: "oidc-user",
+    role: UserRole.ADMIN,
+  });
+
+  function mockOidcProvider(enabled = true) {
+    mocks.sendCommand.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "auth/providers" && enabled
+          ? [
+              {
+                provider_id: "oidc",
+                provider_type: "oidc",
+                requires_redirect: true,
+              },
+            ]
+          : [],
+      ),
+    );
+    mocks.serverInfo.value = {
+      homeassistant_addon: false,
+      server_id: "server-id",
+      external_url: "https://music.example.com",
+    };
+  }
+
+  function popupWindow() {
+    const popup = {
+      closed: false,
+      close: vi.fn(() => {
+        popup.closed = true;
+      }),
+      document: { body: { innerText: "" } },
+      location: { replace: vi.fn() },
+    };
+    return popup as unknown as Window;
+  }
+
+  beforeEach(() => {
+    setLocation(`?remote=1&remote_id=${remoteId}`);
+  });
+
+  it("shows the sign-in button only when the server discovers OIDC", async () => {
+    mockOidcProvider(false);
+    const withoutOidc = mountLogin();
+    await flushPromises();
+    expect(withoutOidc.text()).not.toContain("Sign in with OpenID Connect");
+    withoutOidc.unmount();
+
+    mocks.apiState.value = "disconnected";
+    mocks.currentRemoteId.value = null;
+    setLocation(`?remote=1&remote_id=${remoteId}`);
+    mockOidcProvider(true);
+    const withOidc = mountLogin();
+    await flushPromises();
+    expect(withOidc.text()).toContain("Sign in with OpenID Connect");
+    withOidc.unmount();
+  });
+
+  it("authenticates a same-origin popup result through the MA token session", async () => {
+    mockOidcProvider();
+    const popup = popupWindow();
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    mocks.startAuthorization.mockResolvedValue({
+      authorization_url: authorizationUrl,
+    });
+    mocks.authenticateWithToken.mockResolvedValue({ user: signedInUser });
+    const wrapper = mountLogin();
+    await flushPromises();
+
+    const button = wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("Sign in with OpenID Connect"));
+    await button!.trigger("click");
+    await flushPromises();
+
+    expect(mocks.startAuthorization).toHaveBeenCalledWith(
+      "oidc",
+      expect.stringContaining("ma_oidc_popup="),
+    );
+    expect(popup.location.replace).toHaveBeenCalledWith(authorizationUrl);
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: window.location.origin,
+        source: popup,
+        data: {
+          type: "oauth_success",
+          token: "ma-issued-token",
+          redirectUrl: window.location.origin + "/",
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(wrapper.emitted("authenticated")).toEqual([
+        [{ token: "ma-issued-token", user: signedInUser }],
+      ]),
+    );
+    expect(mocks.authenticateWithToken).toHaveBeenCalledExactlyOnceWith(
+      "ma-issued-token",
+    );
+  });
+
+  it("falls back to a same-tab redirect when popups are blocked", async () => {
+    mockOidcProvider();
+    vi.spyOn(window, "open").mockReturnValue(null);
+    const replace = vi
+      .spyOn(window.location, "replace")
+      .mockImplementation(() => {});
+    mocks.startAuthorization.mockResolvedValue({
+      authorization_url: authorizationUrl,
+    });
+    const wrapper = mountLogin();
+    await flushPromises();
+
+    const button = wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("Sign in with OpenID Connect"));
+    await button!.trigger("click");
+    await flushPromises();
+
+    expect(mocks.startAuthorization).toHaveBeenCalledWith(
+      "oidc",
+      expect.not.stringContaining("ma_oidc_popup"),
+    );
+    expect(replace).toHaveBeenCalledWith(authorizationUrl);
+  });
+
+  it("shows callback failure after a denied or expired popup transaction", async () => {
+    mockOidcProvider();
+    const popup = popupWindow();
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    mocks.startAuthorization.mockResolvedValue({
+      authorization_url: authorizationUrl,
+    });
+    const wrapper = mountLogin();
+    await flushPromises();
+
+    const button = wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("Sign in with OpenID Connect"));
+    await button!.trigger("click");
+    await flushPromises();
+    popup.document.body.innerText =
+      "Authentication Failed: Invalid or expired state";
+
+    await vi.waitFor(() =>
+      expect(
+        wrapper
+          .find('input[placeholder="Enter your password"]')
+          .attributes("error-messages"),
+      ).toBe("OpenID Connect sign-in could not be completed."),
+    );
+    expect(mocks.authenticateWithToken).not.toHaveBeenCalled();
+  });
+});
+
 describe("credentials field input behavior", () => {
   it("marks username and password inputs for autofill and disables mobile autocorrect", async () => {
     mockStandaloneFrontend();

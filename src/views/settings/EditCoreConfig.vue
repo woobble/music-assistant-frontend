@@ -19,6 +19,10 @@
       @update:value="onUrlUpdate"
     />
 
+    <OidcRegistrationPolicy
+      v-if="canManageOidcRegistration && oidcRegistrationEntry"
+    />
+
     <edit-config
       v-if="config"
       ref="editConfig"
@@ -45,7 +49,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { useConfigAction } from "@/composables/useConfigAction";
 import { getExternalLinkUrl } from "@/helpers/utils";
 import { api } from "@/plugins/api";
-import { ConfigValueType, CoreConfig } from "@/plugins/api/interfaces";
+import { authManager } from "@/plugins/auth";
+import { ConfigValueType, CoreConfig, Scope } from "@/plugins/api/interfaces";
 import {
   Database,
   Globe,
@@ -59,6 +64,7 @@ import { computed, ref, watch, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import EditConfig from "./EditConfig.vue";
+import OidcRegistrationPolicy from "./OidcRegistrationPolicy.vue";
 import ServerUrlsCard from "./ServerUrlsCard.vue";
 import SettingsHeaderCard from "./SettingsHeaderCard.vue";
 
@@ -69,6 +75,14 @@ const config = ref<CoreConfig>();
 const editConfig = ref<InstanceType<typeof EditConfig>>();
 const urlCard = ref<InstanceType<typeof ServerUrlsCard>>();
 const loading = ref(false);
+const canManageOidcRegistration = computed(() =>
+  authManager.hasScope(Scope.USERS_MANAGE),
+);
+const oidcRegistrationEntry = computed(() =>
+  config.value?.domain === "webserver"
+    ? config.value.values.auth_oidc_allow_registration
+    : undefined,
+);
 
 // props
 const props = defineProps<{
@@ -80,7 +94,9 @@ const allConfigEntries = computed(() => {
   if (!config.value) return [];
   // Pass all entries (including hidden ones) to EditConfig
   // Hidden entries contain values that need to be preserved on save
-  return Object.values(config.value.values);
+  return Object.values(config.value.values).filter(
+    (entry) => entry.key !== "auth_oidc_allow_registration",
+  );
 });
 
 // the webserver entries the URL card edits in place of the form
